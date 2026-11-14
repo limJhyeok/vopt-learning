@@ -27,13 +27,27 @@ def build_engine(
 ) -> Path:
     """ONNX → serialized engine 파일.
 
+    정밀도: 최신 TensorRT는 strongly typed 네트워크만 지원하므로 engine 정밀도 = ONNX의 dtype.
+      FP16 engine이 필요하면 model.half()로 export한 ONNX를 넣는다(fp16=False 그대로).
+      fp16=True(weak typing, BuilderFlag.FP16)는 이 플래그가 남아 있는 구버전 TRT에서만 동작한다.
     shapes: 동적 입력용 {input_name: (min, opt, max)}. 정적 shape 모델이면 None.
     """
     import tensorrt as trt
 
+    has_fp16_flag = hasattr(trt.BuilderFlag, "FP16")
+    if fp16 and not has_fp16_flag:
+        raise ValueError(
+            f"TensorRT {trt.__version__}는 BuilderFlag.FP16을 지원하지 않습니다(strongly typed 전용). "
+            "model.half()로 FP16 ONNX를 export한 뒤 fp16=False로 빌드하세요."
+        )
+    flags = 0
+    st_flag = getattr(trt.NetworkDefinitionCreationFlag, "STRONGLY_TYPED", None)
+    if st_flag is not None and not fp16:  # strongly typed와 FP16 플래그는 함께 쓸 수 없음
+        flags |= 1 << int(st_flag)
+
     logger = _logger(verbose)
     builder = trt.Builder(logger)
-    network = builder.create_network(0)  # TRT 10: explicit batch가 기본
+    network = builder.create_network(flags)
     parser = trt.OnnxParser(network, logger)
     if not parser.parse_from_file(str(onnx_path)):
         errors = "\n".join(str(parser.get_error(i)) for i in range(parser.num_errors))
