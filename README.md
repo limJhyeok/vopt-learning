@@ -8,6 +8,7 @@ Vision 모델 및 파이프라인 최적화(TensorRT 등) study 노트.
 | 노트북 | 내용 | Colab |
 |---|---|---|
 | [`tensorrt/01_basic.ipynb`](notebooks/tensorrt/01_basic.ipynb) | PyTorch → ONNX → TensorRT 변환과 추론, 정확도·속도 비교 | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/limJhyeok/vopt-learning/blob/main/notebooks/tensorrt/01_basic.ipynb) |
+| [`tensorrt/02_dynamic_batch.ipynb`](notebooks/tensorrt/02_dynamic_batch.ipynb) | static engine에 다른 batch를 넣으면 생기는 일, optimization profile로 dynamic batch engine 만들기 | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/limJhyeok/vopt-learning/blob/main/notebooks/tensorrt/02_dynamic_batch.ipynb) |
 
 ## 구조
 ```
