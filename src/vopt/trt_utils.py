@@ -16,6 +16,39 @@ def _logger(verbose: bool = False):
     return trt.Logger(trt.Logger.VERBOSE if verbose else trt.Logger.WARNING)
 
 
+_print_logger_cls = None
+
+
+def _make_print_logger_cls():
+    import tensorrt as trt
+
+    class PrintLogger(trt.ILogger):
+        """TensorRT 경고/에러를 Python print로 출력하는 로거.
+
+        기본 trt.Logger는 C++ stderr로 출력해서 Jupyter/Colab 셀에 잘 안 보인다.
+        runtime/builder가 쓰는 동안 인스턴스가 살아 있어야 하므로 변수로 들고 있을 것.
+        """
+
+        def __init__(self):
+            trt.ILogger.__init__(self)
+
+        def log(self, severity, msg):
+            if severity in (trt.ILogger.INTERNAL_ERROR, trt.ILogger.ERROR, trt.ILogger.WARNING):
+                print(f"[TRT {severity.name}] {msg}")
+
+    return PrintLogger
+
+
+def __getattr__(name: str):
+    # tensorrt를 import 시점이 아니라 PrintLogger를 처음 쓸 때 불러오기 위한 lazy attribute
+    global _print_logger_cls
+    if name == "PrintLogger":
+        if _print_logger_cls is None:
+            _print_logger_cls = _make_print_logger_cls()
+        return _print_logger_cls
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def build_engine(
     onnx_path: str | Path,
     engine_path: str | Path,
@@ -24,6 +57,7 @@ def build_engine(
     workspace_gb: float = 4,
     shapes: dict[str, tuple[Shape, Shape, Shape]] | None = None,
     verbose: bool = False,
+    logger=None,
 ) -> Path:
     """ONNX → serialized engine 파일.
 
@@ -31,6 +65,8 @@ def build_engine(
       FP16 engine이 필요하면 model.half()로 export한 ONNX를 넣는다(fp16=False 그대로).
       fp16=True(weak typing, BuilderFlag.FP16)는 이 플래그가 남아 있는 구버전 TRT에서만 동작한다.
     shapes: 동적 입력용 {input_name: (min, opt, max)}. 정적 shape 모델이면 None.
+    logger: TensorRT는 프로세스당 logger 하나만 쓴다(나중에 다른 logger를 넘기면 무시됨).
+      노트북에서 PrintLogger 등을 쓰고 있다면 같은 인스턴스를 넘길 것. None이면 기본 trt.Logger.
     """
     import tensorrt as trt
 
@@ -45,7 +81,7 @@ def build_engine(
     if st_flag is not None and not fp16:  # strongly typed와 FP16 플래그는 함께 쓸 수 없음
         flags |= 1 << int(st_flag)
 
-    logger = _logger(verbose)
+    logger = logger or _logger(verbose)
     builder = trt.Builder(logger)
     network = builder.create_network(flags)
     parser = trt.OnnxParser(network, logger)
@@ -148,7 +184,16 @@ class TRTModule:
         for name in self.input_names:
             t = feeds[name].contiguous()
             feeds[name] = t  # 실행 끝날 때까지 참조 유지
-            self.context.set_input_shape(name, tuple(t.shape))
+            # 허용되지 않는 shape이면 예외 없이 False만 반환한다. 무시하면 이전 shape으로 실행되어
+            # 입력 버퍼 밖을 읽는다(out-of-bounds read).
+            if not self.context.set_input_shape(name, tuple(t.shape)):
+                shape = tuple(self.engine.get_tensor_shape(name))
+                if -1 in shape:  # dynamic: 허용 범위는 optimization profile의 min~max
+                    mn, _, mx = self.engine.get_tensor_profile_shape(name, 0)
+                    allowed = f"min {tuple(mn)} ~ max {tuple(mx)}"
+                else:
+                    allowed = str(shape)
+                raise ValueError(f"{name}: shape {tuple(t.shape)}은 이 engine에서 실행할 수 없음 (허용: {allowed})")
             self.context.set_tensor_address(name, t.data_ptr())
         outputs = {}
         for name in self.output_names:
